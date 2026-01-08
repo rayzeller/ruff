@@ -1708,7 +1708,7 @@ mod tests {
     use ruff_db::Db;
     use ruff_db::files::{File, FilePath, system_path_to_file};
     use ruff_db::system::{DbWithTestSystem as _, DbWithWritableSystem as _};
-    use ruff_db::testing::{assert_function_query_was_not_run, assert_function_query_was_run};
+    use ruff_db::testing::assert_function_query_was_not_run;
     use ruff_python_ast::PythonVersion;
 
     use crate::db::tests::TestDb;
@@ -2388,7 +2388,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_file_to_search_path_with_lower_priority_invalidates_query() {
+    fn adding_file_to_search_path_with_lower_priority_does_not_invalidate_query() {
         const TYPESHED: MockedTypeshed = MockedTypeshed {
             versions: "functools: 3.8-",
             stdlib_files: &[("functools.pyi", "def update_wrapper(): ...")],
@@ -2424,7 +2424,7 @@ mod tests {
         let functools_file = functools_module.file(&db).unwrap();
         let functools_search_path = functools_module.search_path(&db).unwrap().clone();
         let events = db.take_salsa_events();
-        assert_function_query_was_run(
+        assert_function_query_was_not_run(
             &db,
             resolve_module_query,
             ModuleNameIngredient::new(&db, functools_module_name, ModuleResolveMode::StubsAllowed),
