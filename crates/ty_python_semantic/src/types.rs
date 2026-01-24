@@ -5771,18 +5771,34 @@ impl<'db> Type<'db> {
                     if let Some(definition) =
                         bound_self.and_then(|bound| bound.binding_context(db).definition())
                     {
-                        let is_staticmethod = infer::function_type_from_definition(db, definition)
-                            .is_some_and(|func| {
-                                func.has_known_decorator(db, FunctionDecorators::STATICMETHOD)
-                            });
+                        let mut needs_staticmethod_check = true;
+                        if definition.file(db) == scope_id.file(db) {
+                            if let DefinitionKind::Function(function) = definition.kind(db) {
+                                let file = definition.file(db);
+                                let module = parsed_module(db, file).load(db);
+                                needs_staticmethod_check =
+                                    !function.node(&module).decorator_list.is_empty();
+                            }
+                        }
 
-                        if is_staticmethod {
-                            return Err(InvalidTypeExpressionError {
-                                fallback_type: Type::unknown(),
-                                invalid_expressions: smallvec_inline![
-                                    InvalidTypeExpression::SelfInStaticMethod
-                                ],
-                            });
+                        if needs_staticmethod_check {
+                            let is_staticmethod =
+                                infer::function_type_from_definition(db, definition)
+                                    .is_some_and(|func| {
+                                        func.has_known_decorator(
+                                            db,
+                                            FunctionDecorators::STATICMETHOD,
+                                        )
+                                    });
+
+                            if is_staticmethod {
+                                return Err(InvalidTypeExpressionError {
+                                    fallback_type: Type::unknown(),
+                                    invalid_expressions: smallvec_inline![
+                                        InvalidTypeExpression::SelfInStaticMethod
+                                    ],
+                                });
+                            }
                         }
                     }
 
