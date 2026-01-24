@@ -1319,6 +1319,9 @@ fn last_definition_signature_cycle_initial<'db>(
 /// - [`FunctionBodyKind::AlwaysRaisesNotImplementedError`] if it consists of a single
 ///   `raise NotImplementedError` statement
 /// - [`FunctionBodyKind::Regular`] otherwise
+///
+/// In all cases, we allow a docstring as the first statement in the function body;
+/// the analysis is only done on the remaining statements if the first is a docstring.
 pub(super) fn function_body_kind<'db>(
     db: &'db dyn Db,
     node: &ast::StmtFunctionDef,
@@ -1370,7 +1373,8 @@ pub(super) fn function_body_kind<'db>(
 pub(super) enum FunctionBodyKind {
     /// The function body only consists of `...`, `pass`, and/or a docstring.
     Stub,
-    /// The function body consists of a single `raise NotImplementedError` statement.
+    /// The function body consists of a single `raise NotImplementedError` statement,
+    /// possibly preceded by a docstring.
     AlwaysRaisesNotImplementedError,
     /// Any function body that is not a stub and does not consist of a single
     /// `raise NotImplementedError` statement.
