@@ -6410,15 +6410,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             self.infer_newtype_assignment_deferred(arguments);
             return;
         }
-        if known_class == Some(KnownClass::Type) {
-            // Infer the `bases` argument for three-argument `type()` calls.
-            // This is deferred to break cycles for self-referential definitions
-            // like `X = type("X", (tuple["X | None"],), {})`.
-            if arguments.args.len() >= 2 {
-                self.infer_expression(&arguments.args[1], TypeContext::default());
-            }
-            return;
-        }
         for arg in arguments.args.iter().skip(1) {
             self.infer_type_expression(arg);
         }
