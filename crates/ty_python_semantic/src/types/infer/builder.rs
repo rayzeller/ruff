@@ -12412,6 +12412,40 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     fallback()
                 }
                 LookupError::PossiblyUndefined(type_when_bound) => {
+                    // If the attribute is possibly undefined due to some union elements
+                    // completely lacking the attribute (rather than the attribute being
+                    // conditionally defined within a single type), we should emit an
+                    // error instead of a warning.
+                    if let Type::Union(union) = value_type {
+                        let missing_elements: Vec<_> = union
+                            .elements(db)
+                            .iter()
+                            .filter(|element| element.member(db, attr_name).place.is_undefined())
+                            .collect();
+
+                        if !missing_elements.is_empty() {
+                            if self.is_reachable(attribute) {
+                                if let Some(builder) =
+                                    self.context.report_lint(&UNRESOLVED_ATTRIBUTE, attribute)
+                                {
+                                    let missing_types = missing_elements
+                                        .iter()
+                                        .map(|ty| format!("`{}`", ty.display(db)))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+
+                                    builder.into_diagnostic(format_args!(
+                                        "Attribute `{attr_name}` is not defined on {} \
+                                        in union `{value_type}`",
+                                        missing_types,
+                                        value_type = value_type.display(db),
+                                    ));
+                                }
+                            }
+                            return type_when_bound;
+                        }
+                    }
+
                     report_possibly_missing_attribute(
                         &self.context,
                         attribute,
