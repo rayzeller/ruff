@@ -81,6 +81,23 @@ mdtest path: crates/ty_python_semantic/resources/mdtest/abstract.md
 66 | 
 67 | Sub1()  # error: [call-non-callable]
 68 | Sub2()  # fine
+69 | from typing import Protocol
+70 | 
+71 | class Abstract(Protocol):
+72 |     def a(self) -> int: ...
+73 |     def b(self) -> int: ...
+74 |     def c(self) -> int: ...
+75 |     def d(self) -> int: ...
+76 |     def e(self) -> int: ...
+77 |     def f(self) -> int: ...
+78 |     def g(self) -> int: ...
+79 |     def h(self) -> int: ...
+80 |     def i(self) -> int: ...
+81 |     def k(self) -> int: ...
+82 | 
+83 | class StillSadlyAbstract(Abstract): ...
+84 | 
+85 | StillSadlyAbstract()  # error: [call-non-callable]
 ```
 
 # Diagnostics
@@ -220,6 +237,7 @@ error[call-non-callable]: Cannot instantiate abstract class `Sub1`
 67 | Sub1()  # error: [call-non-callable]
    | ^^^^^^ Abstract method `bar` is unimplemented
 68 | Sub2()  # fine
+69 | from typing import Protocol
    |
   ::: src/mdtest_snippet.py:59:9
    |
@@ -229,6 +247,39 @@ error[call-non-callable]: Cannot instantiate abstract class `Sub1`
    |         --- `bar` declared as abstract on superclass `AbstractMixin`
 60 |
 61 | class ConcreteMixin:
+   |
+info: rule `call-non-callable` is enabled by default
+
+```
+
+```
+error[call-non-callable]: Cannot instantiate abstract class `StillSadlyAbstract`
+  --> src/mdtest_snippet.py:85:1
+   |
+83 | class StillSadlyAbstract(Abstract): ...
+84 |
+85 | StillSadlyAbstract()  # error: [call-non-callable]
+   | ^^^^^^^^^^^^^^^^^^^^ `StillSadlyAbstract` has unimplemented abstract methods
+   |
+info: 10 abstract methods are unimplemented, including `a`, `b` and `c`
+  --> src/mdtest_snippet.py:72:9
+   |
+71 | class Abstract(Protocol):
+72 |     def a(self) -> int: ...
+   |         - `a` declared as abstract on superclass `Abstract`
+73 |     def b(self) -> int: ...
+74 |     def c(self) -> int: ...
+   |
+info: Use `--verbose` to see all 10 unimplemented abstract methods
+info: `Abstract.a` is implicitly abstract because `Abstract` is a `Protocol` class and `a` lacks an implementation
+  --> src/mdtest_snippet.py:71:7
+   |
+69 | from typing import Protocol
+70 |
+71 | class Abstract(Protocol):
+   |       ------------------ `Abstract` declared here
+72 |     def a(self) -> int: ...
+73 |     def b(self) -> int: ...
    |
 info: rule `call-non-callable` is enabled by default
 

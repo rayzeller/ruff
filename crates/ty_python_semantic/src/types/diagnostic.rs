@@ -3835,9 +3835,10 @@ pub(crate) fn report_attempted_instantiation_of_abstract_class<'db>(
         let secondary_annotation = Annotation::secondary(method.span(db));
         if abstract_methods.len() == 1 {
             diagnostic
-                .set_primary_message(format_args!("Abstract method `{name}` is unimplemented",));
+                .set_primary_message(format_args!("Abstract method `{name}` is unimplemented"));
             diagnostic.set_concise_message(format_args!(
-                "Cannot instantiate `{class_name}` with unimplemented abstract method `{name}`"
+                "Cannot instantiate `{class_name}` with unimplemented \
+                abstract method `{name}`"
             ));
             if method.defining_class == class {
                 diagnostic.annotate(
@@ -3853,14 +3854,29 @@ pub(crate) fn report_attempted_instantiation_of_abstract_class<'db>(
             diagnostic.set_primary_message(format_args!(
                 "`{class_name}` has unimplemented abstract methods",
             ));
-            let formatted_methods = format_enumeration(abstract_methods.keys());
+            let verbose = db.verbose();
+            let num_abstract_methods = abstract_methods.len();
+            let max_abstract_methods_to_print = if verbose { num_abstract_methods } else { 3 };
+            let formatted_methods =
+                format_enumeration(abstract_methods.keys().take(max_abstract_methods_to_print));
             diagnostic.set_concise_message(format_args!(
-                "Cannot instantiate `{class_name}` with unimplemented abstract methods {formatted_methods}"
+                "Cannot instantiate `{class_name}` with unimplemented \
+                abstract methods {formatted_methods}"
             ));
-            let mut class_def_sub = SubDiagnostic::new(
-                SubDiagnosticSeverity::Info,
-                format_args!("Abstract methods {formatted_methods} are unimplemented"),
-            );
+            let mut class_def_sub = if num_abstract_methods > max_abstract_methods_to_print {
+                SubDiagnostic::new(
+                    SubDiagnosticSeverity::Info,
+                    format_args!(
+                        "{num_abstract_methods} abstract methods are unimplemented, \
+                        including {formatted_methods}",
+                    ),
+                )
+            } else {
+                SubDiagnostic::new(
+                    SubDiagnosticSeverity::Info,
+                    format_args!("Abstract methods {formatted_methods} are unimplemented"),
+                )
+            };
             if method.defining_class == class {
                 class_def_sub.annotate(
                     secondary_annotation.message(format_args!("`{name}` declared as abstract")),
@@ -3872,6 +3888,12 @@ pub(crate) fn report_attempted_instantiation_of_abstract_class<'db>(
                 )));
             }
             diagnostic.sub(class_def_sub);
+            if num_abstract_methods > max_abstract_methods_to_print {
+                diagnostic.info(format_args!(
+                    "Use `--verbose` to see all {num_abstract_methods} \
+                    unimplemented abstract methods",
+                ));
+            }
         }
 
         if let Some(subdiagnostic) = method.explanatory_subdiagnostic(db, name) {
