@@ -336,3 +336,16 @@ while random():
     reveal_type(x)  # revealed: Literal[2, 1]
     reveal_type(y)  # revealed: Literal[1, 2]
 ```
+
+We should be able to see when a loop body is guaranteed to execute at least once. However, Pyright
+and other checkers don't currently handle this case either:
+
+```py
+x = "foo"
+while x != "bar":
+    definitely_bound = 42
+    x = "bar"
+# TODO: We should see that `definitely_bound` is definitely bound.
+# error: [possibly-unresolved-reference]
+reveal_type(definitely_bound)  # revealed: Literal[42]
+```
