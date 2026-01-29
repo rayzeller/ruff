@@ -59,7 +59,7 @@ pub use crate::types::display::{DisplaySettings, TypeDetail, TypeDisplayDetails}
 use crate::types::enums::{enum_metadata, is_single_member_enum};
 use crate::types::function::{
     DataclassTransformerFlags, DataclassTransformerParams, FunctionDecorators, FunctionSpans,
-    FunctionType, KnownFunction,
+    FunctionType, KnownFunction, is_implicit_staticmethod,
 };
 pub(crate) use crate::types::generics::GenericContext;
 use crate::types::generics::{
@@ -210,6 +210,44 @@ fn definition_expression_type<'db>(
         // expression is in a type-params sub-scope
         infer_complete_scope_types(db, scope).expression_type(expression)
     }
+}
+
+fn decorator_expression_type<'db>(
+    db: &'db dyn Db,
+    definition: Definition<'db>,
+    expression: &ast::Expr,
+) -> Type<'db> {
+    let file = definition.file(db);
+    let index = semantic_index(db, file);
+    let file_scope = index.expression_scope_id(expression);
+    let scope = file_scope.to_scope_id(db, file);
+    infer_complete_scope_types(db, scope).expression_type(expression)
+}
+
+// Cheap decorator-only check to avoid inferring full function types.
+fn definition_is_staticmethod_syntax<'db>(db: &'db dyn Db, definition: Definition<'db>) -> bool {
+    let DefinitionKind::Function(function) = definition.kind(db) else {
+        return false;
+    };
+
+    let file = definition.file(db);
+    let module = parsed_module(db, file).load(db);
+    let function_node = function.node(&module);
+
+    if is_implicit_staticmethod(function_node.name.as_str()) {
+        return true;
+    }
+
+    if function_node.decorator_list.is_empty() {
+        return false;
+    }
+
+    function_node.decorator_list.iter().any(|decorator| {
+        match decorator_expression_type(db, definition, &decorator.expression) {
+            Type::ClassLiteral(class) => class.is_known(db, KnownClass::Staticmethod),
+            _ => false,
+        }
+    })
 }
 
 /// A [`TypeTransformer`] that is used in `apply_type_mapping` methods.
@@ -5771,34 +5809,13 @@ impl<'db> Type<'db> {
                     if let Some(definition) =
                         bound_self.and_then(|bound| bound.binding_context(db).definition())
                     {
-                        let mut needs_staticmethod_check = true;
-                        if definition.file(db) == scope_id.file(db) {
-                            if let DefinitionKind::Function(function) = definition.kind(db) {
-                                let file = definition.file(db);
-                                let module = parsed_module(db, file).load(db);
-                                needs_staticmethod_check =
-                                    !function.node(&module).decorator_list.is_empty();
-                            }
-                        }
-
-                        if needs_staticmethod_check {
-                            let is_staticmethod =
-                                infer::function_type_from_definition(db, definition)
-                                    .is_some_and(|func| {
-                                        func.has_known_decorator(
-                                            db,
-                                            FunctionDecorators::STATICMETHOD,
-                                        )
-                                    });
-
-                            if is_staticmethod {
-                                return Err(InvalidTypeExpressionError {
-                                    fallback_type: Type::unknown(),
-                                    invalid_expressions: smallvec_inline![
-                                        InvalidTypeExpression::SelfInStaticMethod
-                                    ],
-                                });
-                            }
+                        if definition_is_staticmethod_syntax(db, definition) {
+                            return Err(InvalidTypeExpressionError {
+                                fallback_type: Type::unknown(),
+                                invalid_expressions: smallvec_inline![
+                                    InvalidTypeExpression::SelfInStaticMethod
+                                ],
+                            });
                         }
                     }
 
