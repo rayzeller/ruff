@@ -303,8 +303,10 @@ x = 1
 y = 2
 while random():
     x, y = y, x
-    reveal_type(x)  # revealed: Literal[2, 1]
-    reveal_type(y)  # revealed: Literal[1, 2]
+    # TODO: should be Literal[2, 1]
+    reveal_type(x)  # revealed: Divergent
+    # TODO: should be Literal[1, 2]
+    reveal_type(y)  # revealed: Divergent
 ```
 
 And tuple assignments in general are inferred correctly:
@@ -313,5 +315,24 @@ And tuple assignments in general are inferred correctly:
 x = 0
 while random():
     x, y = x + 1, None
-    reveal_type(x)  # revealed: int
+    # TODO: should be int
+    reveal_type(x)  # revealed: Divergent
+```
+
+We need to avoid oscillating cycles in cases like the following, where the type of one of these loop
+variables also influences the static reachability of its bindings. This case was minimized from a
+real crash that came up during development checking these lines of `sympy`:
+<https://github.com/sympy/sympy/blob/c2bfd65accf956576b58f0ae57bf5821a0c4ff49/sympy/core/numbers.py#L158-L166>
+
+```py
+x = 1
+y = 2
+while random():
+    if x:
+        x, y = y, x
+    # Note that we get correct types here, rather than `Divergent` as in the TODOs above. I believe
+    # the difference is that in this case the Salsa "cycle head" is `x`, whereas above it's the
+    # tuple on the right hand side of the assignment, which triggers our recursive type handling.
+    reveal_type(x)  # revealed: Literal[2, 1]
+    reveal_type(y)  # revealed: Literal[1, 2]
 ```
