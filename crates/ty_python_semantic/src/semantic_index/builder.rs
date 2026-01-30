@@ -47,7 +47,8 @@ use crate::semantic_index::scope::{
 use crate::semantic_index::scope::{Scope, ScopeId, ScopeKind, ScopeLaziness};
 use crate::semantic_index::symbol::{ScopedSymbolId, Symbol};
 use crate::semantic_index::use_def::{
-    EnclosingSnapshotKey, FlowSnapshot, ScopedEnclosingSnapshotId, UseDefMapBuilder,
+    EnclosingSnapshotKey, FlowSnapshot, PreviousDefinitions, ScopedEnclosingSnapshotId,
+    UseDefMapBuilder,
 };
 use crate::semantic_index::{
     ExpressionsScopeMap, LoopHeader, LoopToken, SemanticIndex, VisibleAncestorsIter,
@@ -840,7 +841,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         place: ScopedPlaceId,
         definition_node: impl Into<DefinitionNodeRef<'ast, 'db>> + std::fmt::Debug + Copy,
     ) -> Definition<'db> {
-        let (definition, num_definitions) = self.push_additional_definition(place, definition_node);
+        let (definition, num_definitions) = self.push_definition(place, definition_node);
         debug_assert_eq!(
             num_definitions, 1,
             "Attempted to create multiple `Definition`s associated with AST node {definition_node:?}"
@@ -874,11 +875,11 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
     /// and the second element is the number of definitions that are now associated with
     /// `definition_node`.
     ///
-    /// This method should only be used when adding a definition associated with a `*` import.
-    /// All other nodes can only ever be associated with exactly 1 or 0 [`Definition`]s.
-    /// For any node other than an [`ast::Alias`] representing a `*` import,
-    /// prefer to use `self.add_definition()`, which ensures that this invariant is maintained.
-    fn push_additional_definition(
+    /// Most AST nodes can only ever be associated with exactly 1 or 0 [`Definition`]s;
+    /// for these, prefer to use `self.add_definition()`, which ensures that this invariant
+    /// is maintained. This method should only be used when adding a definition associated
+    /// with a `*` import (which can have multiple) or loop headers.
+    fn push_definition(
         &mut self,
         place: ScopedPlaceId,
         definition_node: impl Into<DefinitionNodeRef<'ast, 'db>>,
@@ -921,7 +922,14 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             }
             DefinitionCategory::Declaration => use_def.record_declaration(place, definition),
             DefinitionCategory::Binding => {
-                use_def.record_binding(place, definition);
+                use_def.record_binding(place, definition, PreviousDefinitions::AreShadowed);
+                self.delete_associated_bindings(place);
+            }
+            DefinitionCategory::LoopHeaderBinding => {
+                // Loop headers keep previous bindings (including UNBOUND) visible,
+                // since places first assigned inside a loop body may be unbound
+                // on the first iteration.
+                use_def.record_binding(place, definition, PreviousDefinitions::AreKept);
                 self.delete_associated_bindings(place);
             }
         }
@@ -992,62 +1000,44 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         }
     }
 
-    /// Push a loop header definition, keeping UNBOUND visible as a possible state.
-    /// This is used for places first assigned inside a loop body, where the place
-    /// may be unbound on the first iteration.
-    fn push_loop_header_definition(
-        &mut self,
-        place: ScopedPlaceId,
-        definition_node: impl Into<DefinitionNodeRef<'ast, 'db>>,
-    ) -> (Definition<'db>, usize) {
-        let definition_node: DefinitionNodeRef<'ast, 'db> = definition_node.into();
-
-        // Note `definition_node` is guaranteed to be a child of `self.module`
-        let kind = definition_node.into_owned(self.module);
-
-        let category = kind.category(self.source_type.is_stub(), self.module);
-        let is_reexported = kind.is_reexported();
-
-        let definition: Definition<'db> = Definition::new(
-            self.db,
-            self.file,
-            self.current_scope(),
-            place,
-            kind,
-            is_reexported,
-        );
-
-        let num_definitions = {
-            let definitions = self.add_entry_for_definition_key(definition_node.key());
-            definitions.push(definition);
-            definitions.len()
-        };
-
-        if category.is_binding() {
-            self.mark_place_bound(place);
-        }
-        if category.is_declaration() {
-            self.mark_place_declared(place);
-        }
-
-        // For loop headers, use record_binding_keeping_unbound to preserve UNBOUND
-        // as a possible state for places first assigned inside the loop body.
-        let use_def = self.current_use_def_map_mut();
-        debug_assert!(category.is_binding());
-        use_def.record_binding_keeping_unbound(place, definition);
-        self.delete_associated_bindings(place);
-
-        if category.is_binding() {
-            if let Some(id) = place.as_symbol() {
-                self.update_lazy_snapshots(id);
+    /// Build a `LoopHeader` that tracks all the variables bound in a loop, which will be visible
+    /// to uses in the same loop via "loop header definitions". We call this after merging control
+    /// flow from all the loop-back edges, most importantly at the end of the loop body, and also
+    /// at any `continue` statements.
+    fn collect_loop_back_bindings(
+        &self,
+        loop_header_places: &FxHashSet<ScopedPlaceId>,
+        loop_token: LoopToken<'db>,
+    ) {
+        let mut loop_header = LoopHeader::new();
+        let use_def = self.current_use_def_map();
+        if !use_def.is_statically_unreachable() {
+            for place_id in loop_header_places {
+                for (def_state, narrowing_predicates) in use_def.bindings_with_predicates(*place_id)
+                {
+                    if let crate::semantic_index::definition::DefinitionState::Defined(def) =
+                        def_state
+                    {
+                        // Skip other loop headers - their type represents the union of
+                        // types at the inner loop entry, not the types that exit the
+                        // inner loop. Including them would incorrectly propagate types
+                        // that are narrowed by the inner loop's condition.
+                        if matches!(
+                            def.kind(self.db),
+                            crate::semantic_index::definition::DefinitionKind::LoopHeader(_)
+                        ) {
+                            continue;
+                        }
+                        loop_header.add_binding(*place_id, def, narrowing_predicates);
+                    }
+                }
             }
         }
-
-        let mut try_node_stack_manager = std::mem::take(&mut self.try_node_context_stack_manager);
-        try_node_stack_manager.record_definition(self);
-        self.try_node_context_stack_manager = try_node_stack_manager;
-
-        (definition, num_definitions)
+        // The `LoopHeader` needs to be visible to uses within the loop body that we've already
+        // walked, but all our Salsa state is generally immutable. `specify` is how we work around
+        // that. See this section of the Salsa docs:
+        // <https://salsa-rs.github.io/salsa/overview.html#specify-the-result-of-tracked-functions-for-particular-structs>
+        get_loop_header::specify(self.db, loop_token, loop_header);
     }
 
     fn record_expression_narrowing_constraint(
@@ -1932,7 +1922,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                                 );
                             self.current_use_def_map_mut().reachability = definition_reachability;
 
-                            self.push_additional_definition(symbol_id.into(), node_ref);
+                            self.push_definition(symbol_id.into(), node_ref);
 
                             self.current_use_def_map_mut()
                                 .record_and_negate_star_import_reachability_constraint(
@@ -2257,11 +2247,11 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                             place: place_id,
                             loop_token,
                         };
-                        // Use push_loop_header_definition to preserve UNBOUND as a possible
+                        // The LoopHeaderBinding category preserves UNBOUND as a possible
                         // state for places first assigned inside the loop body. This ensures
                         // that if we break out of the loop before assigning the variable,
                         // UNBOUND remains visible.
-                        self.push_loop_header_definition(place_id, loop_header_ref);
+                        self.push_definition(place_id, loop_header_ref);
                     }
                 }
 
@@ -2289,42 +2279,9 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                     self.flow_merge(continue_state);
                 }
 
-                // After walking the body, collect the bindings at the loop-back edge
-                // for each place that has a loop header definition.
-                // Only collect bindings if control flow can actually reach the loop-back edge.
-                // If all paths in the body end with break/return/raise, there are no loop-back bindings.
-                let mut loop_header = LoopHeader::new();
-                let use_def = self.current_use_def_map();
-                if !use_def.is_statically_unreachable() {
-                    for place_id in &loop_header_places {
-                        // Get all definitions currently visible for this place, along with
-                        // their narrowing predicates
-                        for (def_state, narrowing_predicates) in
-                            use_def.bindings_at_loop_back(*place_id)
-                        {
-                            if let crate::semantic_index::definition::DefinitionState::Defined(
-                                def,
-                            ) = def_state
-                            {
-                                // Skip other loop headers - their type represents the union of
-                                // types at the inner loop entry, not the types that exit the
-                                // inner loop. Including them would incorrectly propagate types
-                                // that are narrowed by the inner loop's condition.
-                                if matches!(
-                                    def.kind(self.db),
-                                    crate::semantic_index::definition::DefinitionKind::LoopHeader(
-                                        _
-                                    )
-                                ) {
-                                    continue;
-                                }
-                                loop_header.add_binding(*place_id, def, narrowing_predicates);
-                            }
-                        }
-                    }
-                }
-                // Store the loop-back bindings using salsa's specify mechanism
-                get_loop_header::specify(self.db, loop_token, loop_header);
+                // Collect the bindings at the loop-back edge for each place that has a loop
+                // header definition.
+                self.collect_loop_back_bindings(&loop_header_places, loop_token);
 
                 // We execute the `else` branch once the condition evaluates to false. This could
                 // happen without ever executing the body, if the condition is false the first time
@@ -2425,7 +2382,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                             place: place_id,
                             loop_token,
                         };
-                        self.push_loop_header_definition(place_id, loop_header_ref);
+                        self.push_definition(place_id, loop_header_ref);
                     }
                 }
 
@@ -2442,35 +2399,9 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                     self.flow_merge(continue_state);
                 }
 
-                // After walking the body, collect the bindings at the loop-back edge
-                // for each place that has a loop header definition.
-                let mut loop_header = LoopHeader::new();
-                let use_def = self.current_use_def_map();
-                if !use_def.is_statically_unreachable() {
-                    for place_id in &loop_header_places {
-                        for (def_state, narrowing_predicates) in
-                            use_def.bindings_at_loop_back(*place_id)
-                        {
-                            if let crate::semantic_index::definition::DefinitionState::Defined(
-                                def,
-                            ) = def_state
-                            {
-                                // Skip other loop headers to avoid incorrect type propagation.
-                                if matches!(
-                                    def.kind(self.db),
-                                    crate::semantic_index::definition::DefinitionKind::LoopHeader(
-                                        _
-                                    )
-                                ) {
-                                    continue;
-                                }
-                                loop_header.add_binding(*place_id, def, narrowing_predicates);
-                            }
-                        }
-                    }
-                }
-                // Store the loop-back bindings using salsa's specify mechanism
-                get_loop_header::specify(self.db, loop_token, loop_header);
+                // Collect the bindings at the loop-back edge for each place that has a loop
+                // header definition.
+                self.collect_loop_back_bindings(&loop_header_places, loop_token);
 
                 // We may execute the `else` clause without ever executing the body, so merge in
                 // the pre-loop state before visiting `else`.

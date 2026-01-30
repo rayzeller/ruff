@@ -756,6 +756,10 @@ pub(crate) enum DefinitionCategory {
     Declaration,
     /// A Definition which both declares a type and binds a value (e.g. `x: int = 1`).
     DeclarationAndBinding,
+    /// A loop header binding that keeps previous bindings (including UNBOUND) visible.
+    /// This is used for places first assigned inside a loop body, where the place
+    /// may be unbound on the first iteration.
+    LoopHeaderBinding,
 }
 
 impl DefinitionCategory {
@@ -778,7 +782,9 @@ impl DefinitionCategory {
     pub(crate) fn is_binding(self) -> bool {
         matches!(
             self,
-            DefinitionCategory::Binding | DefinitionCategory::DeclarationAndBinding
+            DefinitionCategory::Binding
+                | DefinitionCategory::DeclarationAndBinding
+                | DefinitionCategory::LoopHeaderBinding
         )
     }
 }
@@ -1007,8 +1013,8 @@ impl DefinitionKind<'_> {
             | DefinitionKind::WithItem(_)
             | DefinitionKind::MatchPattern(_)
             | DefinitionKind::ImportFromSubmodule(_)
-            | DefinitionKind::ExceptHandler(_)
-            | DefinitionKind::LoopHeader(_) => DefinitionCategory::Binding,
+            | DefinitionKind::ExceptHandler(_) => DefinitionCategory::Binding,
+            DefinitionKind::LoopHeader(_) => DefinitionCategory::LoopHeaderBinding,
         }
     }
 

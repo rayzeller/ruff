@@ -89,7 +89,7 @@ pub(super) struct LiveDeclaration {
 pub(super) type LiveDeclarationsIterator<'a> = std::slice::Iter<'a, LiveDeclaration>;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) enum PreviousDefinitions {
+pub(in crate::semantic_index) enum PreviousDefinitions {
     AreShadowed,
     AreKept,
 }
@@ -375,12 +375,18 @@ impl PlaceState {
     }
 
     /// Record a newly-encountered binding for this place.
+    ///
+    /// If `previous_definitions` is `AreShadowed`, prior bindings are replaced.
+    /// If `previous_definitions` is `AreKept`, prior bindings (including UNBOUND) remain visible.
+    /// The latter is used for loop headers, where UNBOUND should remain visible as a possible
+    /// state for places first assigned inside the loop body.
     pub(super) fn record_binding(
         &mut self,
         binding_id: ScopedDefinitionId,
         reachability_constraint: ScopedReachabilityConstraintId,
         is_class_scope: bool,
         is_place_name: bool,
+        previous_definitions: PreviousDefinitions,
     ) {
         debug_assert_ne!(binding_id, ScopedDefinitionId::UNBOUND);
         self.bindings.record_binding(
@@ -388,27 +394,7 @@ impl PlaceState {
             reachability_constraint,
             is_class_scope,
             is_place_name,
-            PreviousDefinitions::AreShadowed,
-        );
-    }
-
-    /// Record a newly-encountered binding for this place, keeping previous bindings visible.
-    /// This is used for loop headers, where UNBOUND should remain visible as a possible state
-    /// (for places first assigned inside the loop body).
-    pub(super) fn record_binding_keeping_unbound(
-        &mut self,
-        binding_id: ScopedDefinitionId,
-        reachability_constraint: ScopedReachabilityConstraintId,
-        is_class_scope: bool,
-        is_place_name: bool,
-    ) {
-        debug_assert_ne!(binding_id, ScopedDefinitionId::UNBOUND);
-        self.bindings.record_binding(
-            binding_id,
-            reachability_constraint,
-            is_class_scope,
-            is_place_name,
-            PreviousDefinitions::AreKept,
+            previous_definitions,
         );
     }
 
@@ -546,6 +532,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
 
         assert_bindings(&narrowing_constraints, &sym, &["1<>"]);
@@ -560,6 +547,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
         let predicate = ScopedPredicateId::new(0).into();
         sym.record_narrowing_constraint(&mut narrowing_constraints, predicate);
@@ -579,6 +567,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
         let predicate = ScopedPredicateId::new(0).into();
         sym1a.record_narrowing_constraint(&mut narrowing_constraints, predicate);
@@ -589,6 +578,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
         let predicate = ScopedPredicateId::new(0).into();
         sym1b.record_narrowing_constraint(&mut narrowing_constraints, predicate);
@@ -608,6 +598,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
         let predicate = ScopedPredicateId::new(1).into();
         sym2a.record_narrowing_constraint(&mut narrowing_constraints, predicate);
@@ -618,6 +609,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
         let predicate = ScopedPredicateId::new(2).into();
         sym1b.record_narrowing_constraint(&mut narrowing_constraints, predicate);
@@ -637,6 +629,7 @@ mod tests {
             ScopedReachabilityConstraintId::ALWAYS_TRUE,
             false,
             true,
+            PreviousDefinitions::AreShadowed,
         );
         let predicate = ScopedPredicateId::new(3).into();
         sym3a.record_narrowing_constraint(&mut narrowing_constraints, predicate);
